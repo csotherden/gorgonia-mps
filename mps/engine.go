@@ -20,14 +20,5 @@ func NewMPSEng() *MPSEng {
 	}
 }
 
-// MatMul is a thin wrapper around the CPU StdEng.MatMul implementation.
-//
-// This is the method you’ll replace with your MPS-backed matmul once the
-// wiring is verified and you have your Metal/MPS plumbing in place.
-func (e *MPSEng) MatMul(a, b, prealloc tensor.Tensor) error {
-	// TODO: replace this with a concrete MPS/Metal implementation.
-	return e.StdEng.MatMul(a, b, prealloc)
-}
-
 // Compile-time check that *MPSEng satisfies tensor.Engine.
 var _ tensor.Engine = (*MPSEng)(nil)
