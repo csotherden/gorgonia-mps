@@ -12,6 +12,7 @@ package mps
 #cgo darwin CFLAGS: -fobjc-arc
 #cgo darwin LDFLAGS: -framework Metal -framework MetalPerformanceShaders -framework Foundation
 #include "mps_matmul.h"
+#include "mps_engine_ctx.h"
 */
 import "C"
 
@@ -219,6 +220,7 @@ func (e *MPSEng) MatMul(a, b, prealloc tensor.Tensor) error {
 	}
 
 	status := C.mpsMatMulFloat32(
+		(C.MPSEngineContext)(e.ctx),
 		(*C.float)(&abuf[0]),
 		(*C.float)(&bbuf[0]),
 		(*C.float)(&cbuf[0]),

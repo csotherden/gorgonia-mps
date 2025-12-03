@@ -1,6 +1,7 @@
 // mps_matmul.m
 // Minimal Objective-C helper that uses Metal Performance Shaders to
-// perform a single-precision matrix multiplication.
+// perform a single-precision matrix multiplication using an engine-level
+// context defined in mps_engine_ctx.{h,m}.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -8,31 +9,29 @@
 
 #import "mps_matmul.h"
 
-// Global Metal objects. These are lazily created on first use and then
-// reused across calls. Metal objects are generally thread-safe to use
-// in this way.
-static id<MTLDevice> g_mpsDevice = nil;
-static id<MTLCommandQueue> g_mpsQueue = nil;
+// Re-declare the engine context ObjC class so we can downcast the
+// opaque MPSEngineContext handle back to a usable object. The actual
+// implementation lives in mps_engine_ctx.m.
+@interface MPSEngineContextObj : NSObject
+@property(nonatomic, readonly) id<MTLDevice> device;
+@property(nonatomic, readonly) id<MTLCommandQueue> queue;
+@end
 
-static void ensureMetalDevice(void) {
-    if (g_mpsDevice != nil && g_mpsQueue != nil) {
-        return;
-    }
-
-    g_mpsDevice = MTLCreateSystemDefaultDevice();
-    if (g_mpsDevice != nil) {
-        g_mpsQueue = [g_mpsDevice newCommandQueue];
-    }
-}
-
-int mpsMatMulFloat32(const float *a,
+int mpsMatMulFloat32(MPSEngineContext ctx,
+                     const float *a,
                      const float *b,
                      float *c,
                      int m,
                      int n,
                      int k) {
     @autoreleasepool {
-        ensureMetalDevice();
+        if (ctx == NULL) {
+            return -1;
+        }
+        MPSEngineContextObj *obj = (__bridge MPSEngineContextObj *)ctx;
+        id<MTLDevice> g_mpsDevice = obj.device;
+        id<MTLCommandQueue> g_mpsQueue = obj.queue;
+
         if (g_mpsDevice == nil || g_mpsQueue == nil) {
             // No usable Metal device; caller should fall back to CPU.
             return -1;
@@ -132,5 +131,3 @@ int mpsMatMulFloat32(const float *a,
         return 0;
     }
 }
-
-
