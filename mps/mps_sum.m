@@ -6,7 +6,6 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-#import "mps_engine_ctx.h"
 #import "mps_sum.h"
 
 // Re-declare the engine context ObjC class so we can downcast the
@@ -15,27 +14,8 @@
 @interface MPSEngineContextObj : NSObject
 @property(nonatomic, readonly) id<MTLDevice> device;
 @property(nonatomic, readonly) id<MTLCommandQueue> queue;
+@property(nonatomic, readonly) id<MTLComputePipelineState> rowSumPSO;
 @end
-
-static NSString * const kRowSumKernelSource =
-@"#include <metal_stdlib>\n"
- "using namespace metal;\n"
- "\n"
- "kernel void row_sum(\n"
- "    const device float *X      [[buffer(0)]],\n"
- "    device float *Y            [[buffer(1)]],\n"
- "    constant uint2 &shape      [[buffer(2)]],\n"
- "    uint gid                   [[thread_position_in_grid]]) {\n"
- "  uint rows = shape.x;\n"
- "  uint cols = shape.y;\n"
- "  if (gid >= rows) { return; }\n"
- "  float acc = 0.0f;\n"
- "  uint base = gid * cols;\n"
- "  for (uint j = 0; j < cols; ++j) {\n"
- "    acc += X[base + j];\n"
- "  }\n"
- "  Y[gid] = acc;\n"
- "}\n";
 
 int mpsRowSumFloat32(MPSEngineContext ctx,
                      const float *x,
@@ -50,8 +30,9 @@ int mpsRowSumFloat32(MPSEngineContext ctx,
         MPSEngineContextObj *obj = (__bridge MPSEngineContextObj *)ctx;
         id<MTLDevice> device = obj.device;
         id<MTLCommandQueue> queue = obj.queue;
+        id<MTLComputePipelineState> pso = obj.rowSumPSO;
 
-        if (device == nil || queue == nil) {
+        if (device == nil || queue == nil || pso == nil) {
             return -1;
         }
 
@@ -64,32 +45,16 @@ int mpsRowSumFloat32(MPSEngineContext ctx,
         const NSUInteger bytesX = uRows * uCols * sizeof(float);
         const NSUInteger bytesY = uRows * sizeof(float);
 
-        NSError *err = nil;
-        id<MTLLibrary> lib = [device newLibraryWithSource:kRowSumKernelSource
-                                                 options:nil
-                                                   error:&err];
-        if (lib == nil) {
-            return -3;
-        }
-
-        id<MTLFunction> fn = [lib newFunctionWithName:@"row_sum"];
-        if (fn == nil) {
-            return -4;
-        }
-
-        id<MTLComputePipelineState> pso =
-            [device newComputePipelineStateWithFunction:fn error:&err];
-        if (pso == nil) {
-            return -5;
-        }
-
         id<MTLBuffer> bufX =
-            [device newBufferWithBytes:x
-                                length:bytesX
-                               options:MTLResourceStorageModeShared];
+            [device newBufferWithBytesNoCopy:(void *)x
+                                      length:bytesX
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:nil];
         id<MTLBuffer> bufY =
-            [device newBufferWithLength:bytesY
-                                 options:MTLResourceStorageModeShared];
+            [device newBufferWithBytesNoCopy:(void *)y
+                                      length:bytesY
+                                     options:MTLResourceStorageModeShared
+                                 deallocator:nil];
         if (bufX == nil || bufY == nil) {
             return -6;
         }
@@ -123,18 +88,20 @@ int mpsRowSumFloat32(MPSEngineContext ctx,
         [enc setBuffer:bufY offset:0 atIndex:1];
         [enc setBuffer:bufShape offset:0 atIndex:2];
 
-        // Launch one thread per row.
-        NSUInteger threadsPerGrid = uRows;
+        // Launch one threadgroup per row, with multiple threads per row
+        // cooperating via threadgroup memory.
         NSUInteger maxThreads = pso.maxTotalThreadsPerThreadgroup;
         if (maxThreads == 0) {
             maxThreads = 1;
         }
-        NSUInteger threadsPerThreadgroup = MIN(maxThreads, threadsPerGrid);
+        const NSUInteger maxPerRow = 256;
+        // Don't launch more threads per row than we have columns.
+        NSUInteger threadsPerThreadgroup = MIN(maxThreads, MIN(uCols, maxPerRow));
 
-        MTLSize gridSize = MTLSizeMake(threadsPerGrid, 1, 1);
+        MTLSize numThreadgroups = MTLSizeMake(uRows, 1, 1);
         MTLSize tgSize = MTLSizeMake(threadsPerThreadgroup, 1, 1);
-        [enc dispatchThreads:gridSize
-         threadsPerThreadgroup:tgSize];
+        [enc dispatchThreadgroups:numThreadgroups
+            threadsPerThreadgroup:tgSize];
 
         [enc endEncoding];
         [cmdBuf commit];
